@@ -1,0 +1,32 @@
+name: 출근길 버스 알림
+
+on:
+  schedule:
+    # 매주 월~금 07:30 KST (UTC 기준 전날 22:30, 일~목)
+    - cron: "30 22 * * 0-4"
+  workflow_dispatch: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r bus-notifier/requirements.txt
+
+      - name: Write route config
+        run: echo "$ROUTES_JSON" > bus-notifier/config/routes.json
+        env:
+          ROUTES_JSON: ${{ secrets.BUS_ROUTES_JSON }}
+
+      - name: Send bus arrival notification
+        env:
+          TAGO_SERVICE_KEY: ${{ secrets.TAGO_SERVICE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bus-notifier/bus_notifier.py notify

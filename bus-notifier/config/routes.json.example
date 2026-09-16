@@ -1,0 +1,14 @@
+[
+  {
+    "label": "집앞 정류장 - 152번",
+    "cityCode": "23",
+    "nodeId": "GGB217000001",
+    "routeId": "GGB2000001"
+  },
+  {
+    "label": "집앞 정류장 - 5714번 (대체 노선)",
+    "cityCode": "23",
+    "nodeId": "GGB217000001",
+    "routeId": "GGB2000045"
+  }
+]
