@@ -1,0 +1,28 @@
+<p>{{ period_label }} 스마트스토어 주문 현황을 정리해봤어요.</p>
+
+<h3>📊 요약</h3>
+<ul>
+  <li>총 주문 건수: <b>{{ total_orders }}건</b></li>
+  <li>총 판매 수량: <b>{{ total_quantity }}개</b></li>
+  <li>총 결제 금액: <b>{{ "{:,}".format(total_amount) }}원</b></li>
+</ul>
+
+{% if top_products %}
+<h3>🏆 인기 상품 TOP {{ top_products|length }}</h3>
+<ol>
+{% for p in top_products %}
+  <li>{{ p.product_name }} — {{ p.quantity }}개 판매 ({{ "{:,}".format(p.amount) }}원)</li>
+{% endfor %}
+</ol>
+{% endif %}
+
+{% if status_breakdown %}
+<h3>📦 주문 상태별 현황</h3>
+<ul>
+{% for status, count in status_breakdown %}
+  <li>{{ status }}: {{ count }}건</li>
+{% endfor %}
+</ul>
+{% endif %}
+
+<p>{{ generated_at }} 기준으로 자동 생성된 리포트입니다.</p>

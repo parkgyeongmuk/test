@@ -1,0 +1,48 @@
+name: 스마트스토어 블로그 자동화
+
+on:
+  schedule:
+    # 매일 09:00 KST (00:00 UTC) 실행
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true 로 설정하면 블로그에 발행하지 않고 콘솔 출력만 합니다"
+        required: false
+        default: "false"
+
+jobs:
+  post-daily-report:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: smartstore-blog-automation
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 의존성 설치
+        run: |
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: 리포트 생성 및 발행
+        env:
+          NAVER_COMMERCE_CLIENT_ID: ${{ secrets.NAVER_COMMERCE_CLIENT_ID }}
+          NAVER_COMMERCE_CLIENT_SECRET: ${{ secrets.NAVER_COMMERCE_CLIENT_SECRET }}
+          NAVER_COMMERCE_ACCOUNT_TYPE: ${{ vars.NAVER_COMMERCE_ACCOUNT_TYPE }}
+          NAVER_COMMERCE_ACCOUNT_ID: ${{ secrets.NAVER_COMMERCE_ACCOUNT_ID }}
+          NAVER_BLOG_CLIENT_ID: ${{ secrets.NAVER_BLOG_CLIENT_ID }}
+          NAVER_BLOG_CLIENT_SECRET: ${{ secrets.NAVER_BLOG_CLIENT_SECRET }}
+          NAVER_BLOG_REFRESH_TOKEN: ${{ secrets.NAVER_BLOG_REFRESH_TOKEN }}
+          NAVER_BLOG_ID: ${{ vars.NAVER_BLOG_ID }}
+          REPORT_DAYS: ${{ vars.REPORT_DAYS }}
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            python -m smartstore_blog_automation.main --dry-run
+          else
+            python -m smartstore_blog_automation.main
+          fi

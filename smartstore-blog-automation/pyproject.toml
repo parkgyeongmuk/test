@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smartstore-blog-automation"
+version = "0.1.0"
+description = "네이버 스마트스토어 주문 현황을 집계해 네이버 블로그에 자동 포스팅"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
