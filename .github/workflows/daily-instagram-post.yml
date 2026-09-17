@@ -1,0 +1,52 @@
+name: Daily Instagram Post
+
+on:
+  schedule:
+    # 00:00 UTC = 09:00 KST, every day
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (generate image/caption only, do not post)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Korean font
+        run: sudo apt-get update && sudo apt-get install -y fonts-nanum
+
+      - name: Install Python dependencies
+        run: pip install -r instagram-auto-post/requirements.txt
+
+      - name: Generate and post
+        env:
+          IMGUR_CLIENT_ID: ${{ secrets.IMGUR_CLIENT_ID }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+        run: |
+          cd instagram-auto-post
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            python3 scripts/main.py --dry-run
+          else
+            python3 scripts/main.py
+          fi
+
+      - name: Commit updated rotation state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add instagram-auto-post/data/state.json
+          git diff --cached --quiet || git commit -m "chore: update product rotation state"
+          git push
