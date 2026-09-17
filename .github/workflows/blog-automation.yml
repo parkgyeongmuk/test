@@ -1,0 +1,30 @@
+name: Smart Store blog automation
+
+on:
+  schedule:
+    # 매일 09:00 KST(00:00 UTC) 실행
+    - cron: "0 0 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r blog-automation/requirements.txt
+      - name: Publish best-seller post
+        working-directory: blog-automation/src
+        env:
+          COMMERCE_CLIENT_ID: ${{ secrets.COMMERCE_CLIENT_ID }}
+          COMMERCE_CLIENT_SECRET: ${{ secrets.COMMERCE_CLIENT_SECRET }}
+          COMMERCE_ACCOUNT_ID: ${{ secrets.COMMERCE_ACCOUNT_ID }}
+          NAVER_LOGIN_CLIENT_ID: ${{ secrets.NAVER_LOGIN_CLIENT_ID }}
+          NAVER_LOGIN_CLIENT_SECRET: ${{ secrets.NAVER_LOGIN_CLIENT_SECRET }}
+          NAVER_LOGIN_REDIRECT_URI: ${{ secrets.NAVER_LOGIN_REDIRECT_URI }}
+          NAVER_LOGIN_REFRESH_TOKEN: ${{ secrets.NAVER_LOGIN_REFRESH_TOKEN }}
+          BLOG_CATEGORY_NO: ${{ secrets.BLOG_CATEGORY_NO }}
+        run: python main.py --days 1 --top 5
