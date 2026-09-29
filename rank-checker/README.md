@@ -12,8 +12,10 @@
 ## 1. 네이버 API 키 발급 (무료, 최초 1회)
 
 1. https://developers.naver.com → 로그인 → **Application → 애플리케이션 등록**
-2. 사용 API: **검색** 선택, 환경: **WEB 설정** 에 `http://localhost` 입력
-3. 등록 후 나오는 **Client ID / Client Secret** 복사
+2. 사용 API 드롭다운에서 **검색** 선택
+   - 목록 처음에는 로그인/캡차 같은 항목만 보입니다. 목록 안에서 **아래로 스크롤**하면 `검색`이 나옵니다.
+3. 비로그인 오픈 API 서비스 환경: **WEB 설정** 선택 → 웹 서비스 URL에 `http://localhost` 입력
+4. 등록 후 나오는 **Client ID / Client Secret** 복사
 
 ## 2. 엑셀 준비 (최초 1회)
 
