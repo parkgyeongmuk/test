@@ -1,0 +1,241 @@
+# 쇼츠 컷 자동 녹화 (Windows 11 + OBS + 크롬)
+# 매일 아침 GitHub의 clips/latest.json(그날 대본의 컷 목록)을 받아서,
+# 컷마다 크롬으로 영상을 그 초로 옮기고 OBS로 녹화해 저장 폴더\날짜\채널\ 에 저장한다.
+#
+# 사용법:
+#   python record.py --dry-run   오늘 컷 목록만 보여주고 녹화는 안 함
+#   python record.py --test      첫 영상의 첫 컷 하나만 녹화 (설정 확인용, 날짜 확인 안 함)
+#   python record.py             전체 녹화 (작업 스케줄러가 매일 실행)
+import argparse, datetime as dt, json, os, re, subprocess, sys, time, urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+CFG = json.loads((HERE / "config.json").read_text(encoding="utf-8"))
+LOG = HERE / "record.log"
+
+# 녹화에 방해되는 플레이어 UI(재생바, 제목, 자막, 추천 영상, 마우스 커서)를 CSS로 숨긴다.
+HIDE_CSS = """
+.ytp-chrome-bottom, .ytp-chrome-top, .ytp-gradient-bottom, .ytp-gradient-top,
+.ytp-caption-window-container, .ytp-ce-element, .ytp-paid-content-overlay,
+.ytp-pause-overlay, .ytp-spinner, .ytp-bezel-text-wrapper, .ytp-bezel,
+.ytp-cards-teaser, .ytp-iv-player-content, .iv-branding, .ytp-autonav-endscreen-countdown-overlay
+{ display: none !important; opacity: 0 !important; }
+* { cursor: none !important; }
+"""
+SKIP_BUTTONS = ".ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern"
+
+
+def log(msg):
+    line = f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}"
+    print(line, flush=True)
+    with open(LOG, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def sec(ts):
+    """'29:07' 또는 '1:12:05' → 초"""
+    p = [float(x) for x in str(ts).split(":")]
+    return p[0] * 3600 + p[1] * 60 + p[2] if len(p) == 3 else p[0] * 60 + p[1]
+
+
+def safe(name):
+    """윈도우 폴더/파일 이름에 못 쓰는 문자를 뺀다."""
+    return re.sub(r'[\\/:*?"<>|]+', "", name).strip().rstrip(".") or "이름없음"
+
+
+def fetch_clips():
+    url = f"https://api.github.com/repos/{CFG['repo']}/contents/{CFG['clips_path']}?ref={CFG['branch']}"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {CFG['github_token']}",
+                                               "Accept": "application/vnd.github.raw", "User-Agent": "shorts-recorder"})
+    return json.loads(urllib.request.urlopen(req, timeout=30).read().decode("utf-8"))
+
+
+def connect_obs():
+    """OBS가 꺼져 있으면 켜고, WebSocket에 연결한다."""
+    import obsws_python as obs
+    def conn():
+        return obs.ReqClient(host=CFG.get("obs_host", "localhost"), port=CFG.get("obs_port", 4455),
+                             password=CFG["obs_password"], timeout=5)
+    try:
+        return conn()
+    except Exception:
+        exe = Path(CFG["obs_exe"])
+        log("OBS 실행 중...")
+        subprocess.Popen([str(exe), "--minimize-to-tray", "--disable-shutdown-check"], cwd=str(exe.parent))
+        for _ in range(30):
+            time.sleep(2)
+            try:
+                return conn()
+            except Exception:
+                pass
+    raise RuntimeError("OBS WebSocket에 연결할 수 없어요. OBS의 도구 → WebSocket 서버 설정을 확인해 주세요.")
+
+
+class Player:
+    """크롬(Playwright)으로 YouTube 플레이어를 조작한다."""
+
+    def __init__(self, pw):
+        self.ctx = pw.chromium.launch_persistent_context(
+            user_data_dir=str(HERE / "chrome-profile"), channel="chrome", headless=False, no_viewport=True,
+            ignore_default_args=["--enable-automation"],
+            args=["--start-fullscreen", "--autoplay-policy=no-user-gesture-required", "--disable-infobars"])
+        self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
+
+    def js(self, code):
+        return self.page.evaluate(f"() => {{ const p = document.querySelector('#movie_player'); {code} }}")
+
+    def ad_showing(self):
+        return bool(self.js("return p && p.classList.contains('ad-showing');"))
+
+    def wait_ads(self, limit=180):
+        """광고가 나오면 건너뛰기 버튼을 누르거나 끝날 때까지 기다린다."""
+        t0 = time.time()
+        while self.ad_showing() and time.time() - t0 < limit:
+            btn = self.page.query_selector(SKIP_BUTTONS)
+            if btn and btn.is_visible():
+                try:
+                    btn.click(timeout=2000)
+                    log("  광고 건너뛰기")
+                except Exception:
+                    pass
+            time.sleep(1)
+        if self.ad_showing():
+            raise RuntimeError("광고가 너무 길어요")
+
+    def open(self, vid):
+        self.page.goto(f"https://www.youtube.com/watch?v={vid}", wait_until="domcontentloaded", timeout=60000)
+        self.page.wait_for_selector("#movie_player video", timeout=60000)
+        time.sleep(3)
+        self.wait_ads()
+        # 소리 켜기, 1080p 시도, 자막 끄기
+        self.js("p.unMute(); p.setVolume(100); try { p.setPlaybackQualityRange('hd1080','hd1080'); } catch(e) {}"
+                "try { p.unloadModule('captions'); } catch(e) {}")
+        self.fullscreen()
+        self.page.add_style_tag(content=HIDE_CSS)
+        self.page.mouse.move(5, 5)
+
+    def fullscreen(self):
+        if self.page.evaluate("() => !!document.fullscreenElement"):
+            return
+        self.page.bring_to_front()
+        self.page.keyboard.press("f")
+        time.sleep(1.5)
+        if not self.page.evaluate("() => !!document.fullscreenElement"):
+            try:
+                self.page.click(".ytp-fullscreen-button", timeout=3000)
+                time.sleep(1.5)
+            except Exception:
+                log("  전체화면 전환 실패 (창 모드로 녹화)")
+
+    def seek_paused(self, t):
+        """t초로 이동해서 멈춘 상태로 만든다. 이동하다 광고가 끼면 광고를 넘기고 다시 이동한다."""
+        for _ in range(3):
+            self.js(f"p.seekTo({t}, true); p.playVideo();")
+            time.sleep(1.5)
+            if self.ad_showing():
+                self.wait_ads()
+                continue
+            self.js(f"p.pauseVideo(); p.seekTo({t}, true);")
+            time.sleep(1.5)
+            if not self.ad_showing():
+                return
+            self.wait_ads()
+        raise RuntimeError("원하는 위치로 이동하지 못했어요")
+
+    def close(self):
+        self.ctx.close()
+
+
+def record_cut(player, cl, vid, cut, out_dir, idx):
+    pad_b, pad_a = CFG.get("pad_before", 1.5), CFG.get("pad_after", 1.5)
+    start, end = max(0, sec(cut["start"]) - pad_b), sec(cut["end"]) + pad_a
+    stem = f"{idx:02d}_{safe(cut['name'])}"
+    if any(out_dir.glob(stem + ".*")):
+        log(f"  이미 있음: {stem}")
+        return True
+    for attempt in range(1, 4):
+        player.seek_paused(start)
+        cl.start_record()
+        time.sleep(0.8)
+        player.js("p.playVideo();")
+        t0, broken = time.time(), False
+        while time.time() - t0 < end - start:
+            time.sleep(0.4)
+            if player.ad_showing():  # 녹화 중에 광고가 끼면 이번 녹화는 버리고 다시
+                broken = True
+                break
+        player.js("p.pauseVideo();")
+        path = Path(cl.stop_record().output_path)
+        target = out_dir / (stem + path.suffix)  # OBS 녹화 형식(mp4/mkv) 그대로
+        for _ in range(20):  # OBS가 파일을 다 쓸 때까지 잠깐 기다린다
+            time.sleep(0.5)
+            try:
+                if broken:
+                    path.unlink()
+                else:
+                    os.replace(path, target)
+                break
+            except PermissionError:
+                continue
+        if not broken:
+            log(f"  저장: {target.name} ({cut['start']}~{cut['end']})")
+            return True
+        log(f"  녹화 중 광고 발생, 다시 시도 ({attempt}/3)")
+        player.wait_ads()
+    log(f"  실패: {cut['name']}")
+    return False
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--test", action="store_true")
+    a = ap.parse_args()
+
+    data = fetch_clips()
+    today = dt.date.today().isoformat()
+    log(f"컷 목록 날짜 {data.get('date')} (오늘 {today}), 영상 {len(data.get('videos', []))}개")
+    if data.get("date") != today and not (a.test or a.dry_run):
+        log("오늘 컷 목록이 아직 없어요. 아침 메일 작업이 실패했을 수 있어요. 종료합니다.")
+        return
+    videos = data["videos"][:1] if a.test else data["videos"]
+    if a.test:
+        videos[0] = dict(videos[0], cuts=videos[0]["cuts"][:1])
+    if a.dry_run:
+        for v in videos:
+            print(f"- {v['channel']} | {v['title']} ({v['video_id']})")
+            for c in v["cuts"]:
+                print(f"    {c['name']}: {c['start']}~{c['end']}")
+        return
+
+    from playwright.sync_api import sync_playwright
+    root = Path(CFG["save_dir"]) / data.get("date", today)
+    cl = connect_obs()
+    ok = total = 0
+    with sync_playwright() as pw:
+        player = Player(pw)
+        try:
+            for v in videos:
+                out_dir = root / safe(v["channel"])
+                out_dir.mkdir(parents=True, exist_ok=True)
+                if v.get("script"):
+                    (out_dir / "대본.txt").write_text(f"{v['title']}\n{v.get('url', '')}\n\n{v['script']}", encoding="utf-8")
+                log(f"{v['channel']} | {v['title']}")
+                try:
+                    player.open(v["video_id"])
+                    for i, cut in enumerate(v["cuts"], 1):
+                        total += 1
+                        ok += record_cut(player, cl, v["video_id"], cut, out_dir, i)
+                except Exception as e:
+                    log(f"  영상 건너뜀: {e}")
+        finally:
+            player.close()
+    log(f"완료: {ok}/{total}개 컷 저장 → {root}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        log(f"오류: {e}")
+        sys.exit(1)

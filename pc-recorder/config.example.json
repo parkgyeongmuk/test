@@ -1,0 +1,13 @@
+{
+  "github_token": "여기에_GitHub_읽기전용_토큰",
+  "repo": "parkgyeongmuk/test",
+  "branch": "claude/confident-pasteur-fi9mov",
+  "clips_path": "clips/latest.json",
+  "save_dir": "D:\\쇼츠녹화",
+  "obs_exe": "C:\\Program Files\\obs-studio\\bin\\64bit\\obs64.exe",
+  "obs_host": "localhost",
+  "obs_port": 4455,
+  "obs_password": "여기에_OBS_WebSocket_비밀번호",
+  "pad_before": 1.5,
+  "pad_after": 1.5
+}
