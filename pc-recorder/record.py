@@ -23,7 +23,7 @@ HIDE_CSS = """
 { display: none !important; opacity: 0 !important; }
 * { cursor: none !important; }
 """
-SKIP_BUTTONS = ".ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern"
+SKIP_BUTTONS = ".ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-ad-skip-button-container button, .ytp-skip-ad button"
 
 
 def log(msg):
@@ -164,20 +164,28 @@ class Player:
             except Exception:
                 log("  전체화면 전환 실패 (창 모드로 녹화)")
 
-    def seek_paused(self, t):
-        """t초로 이동해서 멈춘 상태로 만든다. 이동하다 광고가 끼면 광고를 넘기고 다시 이동한다."""
-        for _ in range(3):
-            self.js(f"p.seekTo({t}, true); p.playVideo();")
-            time.sleep(1.5)
-            if self.ad_showing():
-                self.wait_ads()
-                continue
-            self.js(f"p.pauseVideo(); p.seekTo({t}, true);")
-            time.sleep(1.5)
-            if not self.ad_showing():
-                return
-            self.wait_ads()
-        raise RuntimeError("원하는 위치로 이동하지 못했어요")
+    def now(self):
+        return float(self.js("return p.getCurrentTime();") or 0)
+
+    def reach(self, t, lead=8):
+        """t초 직전에 광고 없이 '재생 중'인 상태를 만든다.
+        컷 위치로 바로 건너뛰면 그때마다 광고가 새로 끼기 쉬워서, lead초 앞으로 한 번만 이동해 틀어 두고
+        광고가 나오면 넘긴 뒤 자연스럽게 재생되다가 t에 닿는 순간 True를 돌려준다(멈추지 않은 채로)."""
+        for _ in range(6):
+            self.js(f"p.seekTo({max(0, t - lead)}, true); p.playVideo();")
+            t0 = time.time()
+            while time.time() - t0 < lead + 40:
+                time.sleep(0.2)
+                if self.ad_showing():
+                    self.wait_ads()  # 광고가 끝나면 원래 위치부터 이어서 재생된다
+                    self.js("p.playVideo();")
+                    continue
+                cur = self.now()
+                if t - 0.3 <= cur <= t + 1.0:
+                    return True
+                if cur > t + 1.0 or cur < t - lead - 30:  # 위치가 엉뚱해지면 다시 이동
+                    break
+        return False
 
     def close(self):
         self.ctx.close()
@@ -190,19 +198,19 @@ def record_cut(player, cl, vid, cut, out_dir, idx):
     if any(out_dir.glob(stem + ".*")):
         log(f"  이미 있음: {stem}")
         return True
-    for attempt in range(1, 4):
-        player.seek_paused(start)
-        cl.start_record()
-        time.sleep(0.8)
-        player.js("p.playVideo();")
+    for attempt in range(1, 6):
+        if not player.reach(start):
+            log(f"  컷 위치로 가지 못함, 다시 시도 ({attempt}/5)")
+            continue
+        cl.start_record()  # 이미 재생 중인 상태에서 바로 녹화 시작
         t0, broken = time.time(), False
         while time.time() - t0 < end - start:
-            time.sleep(0.4)
+            time.sleep(0.3)
             if player.ad_showing():  # 녹화 중에 광고가 끼면 이번 녹화는 버리고 다시
                 broken = True
                 break
-        player.js("p.pauseVideo();")
         path = Path(cl.stop_record().output_path)
+        player.js("p.pauseVideo();")
         target = out_dir / (stem + path.suffix)  # OBS 녹화 형식(mp4/mkv) 그대로
         for _ in range(20):  # OBS가 파일을 다 쓸 때까지 잠깐 기다린다
             time.sleep(0.5)
@@ -217,7 +225,7 @@ def record_cut(player, cl, vid, cut, out_dir, idx):
         if not broken:
             log(f"  저장: {target.name} ({cut['start']}~{cut['end']})")
             return True
-        log(f"  녹화 중 광고 발생, 다시 시도 ({attempt}/3)")
+        log(f"  녹화 중 광고 발생, 다시 시도 ({attempt}/5)")
         player.wait_ads()
     log(f"  실패: {cut['name']}")
     return False
