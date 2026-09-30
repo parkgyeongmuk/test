@@ -98,17 +98,35 @@ def close_recording_chrome(profile):
         raise RuntimeError("녹화 전용 크롬이 아직 켜져 있어요. 크롬 창을 모두 닫고 다시 실행해 주세요.")
 
 
+def mark_clean_exit(profile):
+    """크롬을 강제로 끄면 다음 실행 때 '페이지를 복원하시겠습니까?' 창이 떠서 녹화에 찍힌다.
+    프로필 설정에 '정상 종료'로 적어 두면 그 창이 뜨지 않는다."""
+    pref = profile / "Default" / "Preferences"
+    try:
+        data = json.loads(pref.read_text(encoding="utf-8"))
+        prof = data.setdefault("profile", {})
+        if prof.get("exit_type") != "Normal" or not prof.get("exited_cleanly", True):
+            prof["exit_type"], prof["exited_cleanly"] = "Normal", True
+            pref.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log(f"  크롬 복원 창 끄기 실패(무시하고 진행): {e}")
+
+
 class Player:
     """크롬(Playwright)으로 YouTube 플레이어를 조작한다."""
 
     def __init__(self, pw):
         profile = HERE / "chrome-profile"
         close_recording_chrome(profile)
+        mark_clean_exit(profile)
         log("크롬 여는 중...")
         self.ctx = pw.chromium.launch_persistent_context(
             user_data_dir=str(HERE / "chrome-profile"), channel="chrome", headless=False, no_viewport=True,
             ignore_default_args=["--enable-automation"],
-            args=["--start-fullscreen", "--autoplay-policy=no-user-gesture-required", "--disable-infobars"])
+            args=["--start-fullscreen", "--autoplay-policy=no-user-gesture-required", "--disable-infobars",
+                  "--hide-crash-restore-bubble", "--disable-session-crashed-bubble"])
         self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
 
     def js(self, code):
