@@ -80,6 +80,15 @@ class Player:
     """크롬(Playwright)으로 YouTube 플레이어를 조작한다."""
 
     def __init__(self, pw):
+        profile = HERE / "chrome-profile"
+        lock = profile / "lockfile"
+        if lock.exists():  # --login 으로 연 크롬이 아직 켜져 있으면 같은 프로필을 못 연다
+            try:
+                lock.unlink()
+            except OSError:
+                raise RuntimeError("녹화 전용 크롬이 이미 켜져 있어요. 그 크롬 창을 모두 닫고 다시 실행해 주세요. "
+                                   "(창이 안 보이면 작업 표시줄 오른쪽 아래 숨김 아이콘의 크롬도 종료)")
+        log("크롬 여는 중...")
         self.ctx = pw.chromium.launch_persistent_context(
             user_data_dir=str(HERE / "chrome-profile"), channel="chrome", headless=False, no_viewport=True,
             ignore_default_args=["--enable-automation"],
@@ -108,6 +117,7 @@ class Player:
             raise RuntimeError("광고가 너무 길어요")
 
     def open(self, vid):
+        log(f"  영상 여는 중: https://www.youtube.com/watch?v={vid}")
         self.page.goto(f"https://www.youtube.com/watch?v={vid}", wait_until="domcontentloaded", timeout=60000)
         try:
             self.page.wait_for_selector("#movie_player video", timeout=60000)
@@ -115,6 +125,7 @@ class Player:
             if "로그인" in self.page.content() or "Sign in" in self.page.content():
                 raise RuntimeError("YouTube가 로그인을 요구해요. python record.py --login 으로 한 번 로그인해 주세요.")
             raise
+        log("  영상 페이지 열림, 광고 확인 중...")
         time.sleep(3)
         self.wait_ads()
         # 소리 켜기, 1080p 시도, 자막 끄기
@@ -237,6 +248,7 @@ def main():
     from playwright.sync_api import sync_playwright
     root = Path(CFG["save_dir"]) / data.get("date", today)
     cl = connect_obs()
+    log("OBS 연결 완료")
     ok = total = 0
     with sync_playwright() as pw:
         player = Player(pw)
