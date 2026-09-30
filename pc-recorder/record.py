@@ -39,6 +39,12 @@ def sec(ts):
     return p[0] * 3600 + p[1] * 60 + p[2] if len(p) == 3 else p[0] * 60 + p[1]
 
 
+def clock(t):
+    """초 → '29:07.4'"""
+    m, x = divmod(max(0.0, t), 60)
+    return f"{int(m // 60)}:{int(m % 60):02d}:{x:04.1f}" if m >= 60 else f"{int(m)}:{x:04.1f}"
+
+
 def safe(name):
     """윈도우 폴더/파일 이름에 못 쓰는 문자를 뺀다."""
     return re.sub(r'[\\/:*?"<>|]+', "", name).strip().rstrip(".") or "이름없음"
@@ -185,23 +191,31 @@ class Player:
     def now(self):
         return float(self.js("return p.getCurrentTime();") or 0)
 
+    def playing(self):
+        return self.js("return p.getPlayerState();") == 1
+
     def reach(self, t, lead=8):
-        """t초 직전에 광고 없이 '재생 중'인 상태를 만든다.
+        """t초 직전에 광고 없이 '매끄럽게 재생 중'인 상태를 만든다.
         컷 위치로 바로 건너뛰면 그때마다 광고가 새로 끼기 쉬워서, lead초 앞으로 한 번만 이동해 틀어 두고
-        광고가 나오면 넘긴 뒤 자연스럽게 재생되다가 t에 닿는 순간 True를 돌려준다(멈추지 않은 채로)."""
+        광고가 나오면 넘긴 뒤 자연스럽게 재생되다가 t 직전에 닿는 순간 True를 돌려준다(멈추지 않은 채로).
+        광고 직후 버퍼링으로 멈춰 있는 순간에는 시작하지 않는다."""
         for _ in range(6):
             self.js(f"p.seekTo({max(0, t - lead)}, true); p.playVideo();")
-            t0 = time.time()
-            while time.time() - t0 < lead + 40:
+            t0, prev = time.time(), None
+            while time.time() - t0 < lead + 60:
                 time.sleep(0.2)
                 if self.ad_showing():
                     self.wait_ads()  # 광고가 끝나면 원래 위치부터 이어서 재생된다
                     self.js("p.playVideo();")
+                    prev = None
                     continue
                 cur = self.now()
-                if t - 0.3 <= cur <= t + 1.0:
+                moving = prev is not None and 0.05 < cur - prev < 1.0 and self.playing()
+                prev = cur
+                # OBS가 녹화를 켜는 데 0.5초쯤 걸려서 t보다 조금 일찍 시작한다
+                if moving and t - 0.8 <= cur <= t + 0.5:
                     return True
-                if cur > t + 1.0 or cur < t - lead - 30:  # 위치가 엉뚱해지면 다시 이동
+                if cur > t + 0.5 or cur < t - lead - 30:  # 지나쳤거나 위치가 엉뚱하면 다시 이동
                     break
         return False
 
@@ -221,12 +235,22 @@ def record_cut(player, cl, vid, cut, out_dir, idx):
             log(f"  컷 위치로 가지 못함, 다시 시도 ({attempt}/5)")
             continue
         cl.start_record()  # 이미 재생 중인 상태에서 바로 녹화 시작
-        t0, broken = time.time(), False
-        while time.time() - t0 < end - start:
-            time.sleep(0.3)
+        began, t0, broken, why = player.now(), time.time(), False, ""
+        # 녹화 종료는 시계가 아니라 '영상 재생 위치'가 컷 끝에 닿을 때. 버퍼링으로 멈추면 그만큼 더 기다린다.
+        while True:
+            time.sleep(0.2)
             if player.ad_showing():  # 녹화 중에 광고가 끼면 이번 녹화는 버리고 다시
-                broken = True
+                broken, why = True, "녹화 중 광고 발생"
                 break
+            cur = player.now()
+            if cur >= end:
+                break
+            if time.time() - t0 > (end - start) * 2 + 15:
+                broken, why = True, "영상이 오래 멈춤(버퍼링)"
+                break
+            if not player.playing():
+                player.js("p.playVideo();")
+        ended = player.now()
         path = Path(cl.stop_record().output_path)
         player.js("p.pauseVideo();")
         target = out_dir / (stem + path.suffix)  # OBS 녹화 형식(mp4/mkv) 그대로
@@ -241,9 +265,9 @@ def record_cut(player, cl, vid, cut, out_dir, idx):
             except PermissionError:
                 continue
         if not broken:
-            log(f"  저장: {target.name} ({cut['start']}~{cut['end']})")
+            log(f"  저장: {target.name} (컷 {cut['start']}~{cut['end']}, 실제 녹화 {clock(began)}~{clock(ended)})")
             return True
-        log(f"  녹화 중 광고 발생, 다시 시도 ({attempt}/5)")
+        log(f"  {why}, 다시 시도 ({attempt}/5)")
         player.wait_ads()
     log(f"  실패: {cut['name']}")
     return False
