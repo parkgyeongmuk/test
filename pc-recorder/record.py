@@ -76,18 +76,34 @@ def connect_obs():
     raise RuntimeError("OBS WebSocket에 연결할 수 없어요. OBS의 도구 → WebSocket 서버 설정을 확인해 주세요.")
 
 
+def close_recording_chrome(profile):
+    """녹화 전용 프로필로 켜져 있는 크롬(예: --login 창, 지난번에 남은 창)을 끈다.
+    같은 프로필 크롬이 이미 떠 있으면 새 크롬이 그 창으로 넘어가 버려서 자동 조작이 안 된다.
+    평소 쓰는 크롬(다른 프로필)은 건드리지 않는다."""
+    ps = ("Get-CimInstance Win32_Process -Filter \"name='chrome.exe'\" | "
+          f"Where-Object {{ $_.CommandLine -like '*{profile}*' }} | "
+          "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $_.ProcessId }")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=30).stdout.split()
+    except Exception as e:
+        log(f"  남은 크롬 확인 실패: {e}")
+        return
+    if out:
+        log(f"  남아 있던 녹화 전용 크롬 {len(out)}개를 종료했어요")
+        time.sleep(3)
+    lock = profile / "lockfile"
+    try:
+        if lock.exists(): lock.unlink()
+    except OSError:
+        raise RuntimeError("녹화 전용 크롬이 아직 켜져 있어요. 크롬 창을 모두 닫고 다시 실행해 주세요.")
+
+
 class Player:
     """크롬(Playwright)으로 YouTube 플레이어를 조작한다."""
 
     def __init__(self, pw):
         profile = HERE / "chrome-profile"
-        lock = profile / "lockfile"
-        if lock.exists():  # --login 으로 연 크롬이 아직 켜져 있으면 같은 프로필을 못 연다
-            try:
-                lock.unlink()
-            except OSError:
-                raise RuntimeError("녹화 전용 크롬이 이미 켜져 있어요. 그 크롬 창을 모두 닫고 다시 실행해 주세요. "
-                                   "(창이 안 보이면 작업 표시줄 오른쪽 아래 숨김 아이콘의 크롬도 종료)")
+        close_recording_chrome(profile)
         log("크롬 여는 중...")
         self.ctx = pw.chromium.launch_persistent_context(
             user_data_dir=str(HERE / "chrome-profile"), channel="chrome", headless=False, no_viewport=True,
@@ -215,8 +231,11 @@ def chrome_login():
     exe = next((c for c in cands if c.is_file()), None)
     if not exe:
         raise RuntimeError("chrome.exe를 찾지 못했어요. 크롬이 설치되어 있는지 확인해 주세요.")
+    close_recording_chrome(HERE / "chrome-profile")
     log("녹화 전용 크롬을 엽니다. YouTube에 로그인한 뒤 크롬 창을 닫아 주세요.")
     subprocess.run([str(exe), f"--user-data-dir={HERE / 'chrome-profile'}", "https://accounts.google.com/ServiceLogin?continue=https://www.youtube.com/"])
+    time.sleep(2)
+    close_recording_chrome(HERE / "chrome-profile")  # 창을 닫아도 뒤에 남는 크롬까지 정리
     log("로그인 창을 닫았어요. 이제 python record.py --test 로 다시 시험해 보세요.")
 
 
