@@ -6,6 +6,7 @@
 #   python record.py --dry-run   오늘 컷 목록만 보여주고 녹화는 안 함
 #   python record.py --test      첫 영상의 첫 컷 하나만 녹화 (설정 확인용, 날짜 확인 안 함)
 #   python record.py             전체 녹화 (작업 스케줄러가 매일 실행)
+#   python record.py --login     녹화 전용 크롬을 열어 YouTube에 한 번 로그인 (창을 닫으면 끝)
 import argparse, datetime as dt, json, os, re, subprocess, sys, time, urllib.request
 from pathlib import Path
 
@@ -108,7 +109,12 @@ class Player:
 
     def open(self, vid):
         self.page.goto(f"https://www.youtube.com/watch?v={vid}", wait_until="domcontentloaded", timeout=60000)
-        self.page.wait_for_selector("#movie_player video", timeout=60000)
+        try:
+            self.page.wait_for_selector("#movie_player video", timeout=60000)
+        except Exception:
+            if "로그인" in self.page.content() or "Sign in" in self.page.content():
+                raise RuntimeError("YouTube가 로그인을 요구해요. python record.py --login 으로 한 번 로그인해 주세요.")
+            raise
         time.sleep(3)
         self.wait_ads()
         # 소리 켜기, 1080p 시도, 자막 끄기
@@ -190,11 +196,27 @@ def record_cut(player, cl, vid, cut, out_dir, idx):
     return False
 
 
+def chrome_login():
+    """녹화 전용 크롬 프로필을 평소 크롬처럼 열어서 직접 YouTube에 로그인하게 한다.
+    (자동 조작 중인 크롬에서는 구글 로그인이 막혀서, 로그인만 일반 크롬으로 한다)"""
+    cands = [Path(os.environ.get(k, "")) / "Google/Chrome/Application/chrome.exe"
+             for k in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")]
+    exe = next((c for c in cands if c.is_file()), None)
+    if not exe:
+        raise RuntimeError("chrome.exe를 찾지 못했어요. 크롬이 설치되어 있는지 확인해 주세요.")
+    log("녹화 전용 크롬을 엽니다. YouTube에 로그인한 뒤 크롬 창을 닫아 주세요.")
+    subprocess.run([str(exe), f"--user-data-dir={HERE / 'chrome-profile'}", "https://accounts.google.com/ServiceLogin?continue=https://www.youtube.com/"])
+    log("로그인 창을 닫았어요. 이제 python record.py --test 로 다시 시험해 보세요.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--test", action="store_true")
+    ap.add_argument("--login", action="store_true")
     a = ap.parse_args()
+    if a.login:
+        return chrome_login()
 
     data = fetch_clips()
     today = dt.date.today().isoformat()
