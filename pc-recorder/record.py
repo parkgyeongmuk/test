@@ -58,7 +58,10 @@ def connect_obs():
                              password=CFG["obs_password"], timeout=5)
     try:
         return conn()
-    except Exception:
+    except Exception as e:
+        if "identify" in str(e):  # OBS는 켜져 있는데 비밀번호가 다를 때
+            raise RuntimeError("OBS 비밀번호가 맞지 않아요. OBS의 도구 → WebSocket 서버 설정 → 연결 정보 표시에서 "
+                               "비밀번호를 다시 복사해 config.json의 obs_password에 넣어 주세요.")
         exe = Path(CFG["obs_exe"])
         log("OBS 실행 중...")
         subprocess.Popen([str(exe), "--minimize-to-tray", "--disable-shutdown-check"], cwd=str(exe.parent))
@@ -66,8 +69,9 @@ def connect_obs():
             time.sleep(2)
             try:
                 return conn()
-            except Exception:
-                pass
+            except Exception as e:
+                if "identify" in str(e):
+                    raise RuntimeError("OBS 비밀번호가 맞지 않아요. config.json의 obs_password를 확인해 주세요.")
     raise RuntimeError("OBS WebSocket에 연결할 수 없어요. OBS의 도구 → WebSocket 서버 설정을 확인해 주세요.")
 
 
