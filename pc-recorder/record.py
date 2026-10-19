@@ -7,7 +7,7 @@
 #   python record.py --test      첫 영상의 첫 컷 하나만 녹화 (설정 확인용, 날짜 확인 안 함)
 #   python record.py             전체 녹화 (작업 스케줄러가 매일 실행)
 #   python record.py --login     녹화 전용 크롬을 열어 YouTube에 한 번 로그인 (창을 닫으면 끝)
-import argparse, datetime as dt, json, os, re, subprocess, sys, time, urllib.request
+import argparse, base64, datetime as dt, json, os, re, subprocess, sys, time, urllib.error, urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -55,6 +55,35 @@ def fetch_clips():
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {CFG['github_token']}",
                                                "Accept": "application/vnd.github.raw", "User-Agent": "shorts-recorder"})
     return json.loads(urllib.request.urlopen(req, timeout=30).read().decode("utf-8"))
+
+
+def upload_log():
+    """record.log 마지막 부분을 GitHub 저장소(logs/record.log)에 올린다. PC 앞에 없어도 결과를 확인할 수 있게.
+    토큰에 Contents 쓰기 권한이 있어야 한다. 실패해도 녹화에는 영향이 없고, 실패 이유만 record.log에 남긴다."""
+    if not CFG.get("upload_log", True) or not LOG.exists():
+        return
+    api = f"https://api.github.com/repos/{CFG['repo']}/contents/{CFG.get('log_path', 'logs/record.log')}"
+    hdr = {"Authorization": f"Bearer {CFG['github_token']}", "Accept": "application/vnd.github+json",
+           "User-Agent": "shorts-recorder"}
+    tail = "".join(LOG.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)[-300:])
+    body = {"message": f"log: {dt.datetime.now():%Y-%m-%d %H:%M}", "branch": CFG["branch"],
+            "content": base64.b64encode(tail.encode("utf-8")).decode("ascii")}
+    try:
+        try:  # 이미 올라간 파일이 있으면 덮어쓰려고 sha를 받아 둔다
+            cur = urllib.request.urlopen(urllib.request.Request(f"{api}?ref={CFG['branch']}", headers=hdr), timeout=30)
+            body["sha"] = json.loads(cur.read().decode("utf-8"))["sha"]
+        except urllib.error.HTTPError as e:
+            if e.code != 404:
+                raise
+        req = urllib.request.Request(api, data=json.dumps(body).encode("utf-8"), headers=hdr, method="PUT")
+        urllib.request.urlopen(req, timeout=30)
+        print("실행 기록을 GitHub에 올렸어요 (logs/record.log)", flush=True)
+    except urllib.error.HTTPError as e:
+        why = {401: "GitHub 토큰이 만료됐거나 틀려요",
+               403: "토큰에 Contents 쓰기 권한이 없어요 (설치안내 4단계의 'Read and write' 참고)"}.get(e.code, "")
+        log(f"실행 기록 업로드 실패: HTTP {e.code} {why}")
+    except Exception as e:
+        log(f"실행 기록 업로드 실패: {e}")
 
 
 def connect_obs():
@@ -341,8 +370,12 @@ def main():
 
 
 if __name__ == "__main__":
+    code = 0
     try:
         main()
     except Exception as e:
         log(f"오류: {e}")
-        sys.exit(1)
+        code = 1
+    finally:
+        upload_log()  # 성공이든 실패든 결과를 GitHub에 남긴다
+    sys.exit(code)
