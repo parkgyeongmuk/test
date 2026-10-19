@@ -333,9 +333,13 @@ def main():
     if data.get("date") != today and not (a.test or a.dry_run):
         log("오늘 컷 목록이 아직 없어요. 아침 메일 작업이 실패했을 수 있어요. 종료합니다.")
         return
-    videos = data["videos"][:1] if a.test else data["videos"]
-    if a.test:
-        videos[0] = dict(videos[0], cuts=videos[0]["cuts"][:1])
+    videos = data["videos"]
+    if a.test:  # 컷이 있는 첫 영상의 첫 컷 하나만 (댓글 기반 영상은 컷이 비어 있을 수 있다)
+        first = next((v for v in videos if v.get("cuts")), None)
+        if not first:
+            log("컷이 있는 영상이 없어서 시험 녹화를 할 수 없어요.")
+            return
+        videos = [dict(first, cuts=first["cuts"][:1])]
     if a.dry_run:
         for v in videos:
             print(f"- {v['channel']} | {v['title']} ({v['video_id']})")
