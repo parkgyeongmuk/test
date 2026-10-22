@@ -15,6 +15,7 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = SKILL_DIR / "keyword_db.csv.gz"
 CONFIG_PATH = SKILL_DIR / "config.json"
+NAVER_CAT_PATH = SKILL_DIR / "naver_categories.csv.gz"
 TITLE_MIN, TITLE_MAX = 30, 40
 
 COLOR_WORDS = ("블랙", "화이트", "아이보리", "베이지", "레드", "블루", "그린", "핑크", "브라운", "그레이", "네이비",
@@ -46,6 +47,25 @@ def clean(value, brand_list: list[str] | None = None) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def naver_categories() -> dict[str, str]:
+    """네이버쇼핑 카테고리 번호 → 경로('생활/건강 > 주방용품 > ...')."""
+    if not NAVER_CAT_PATH.exists():
+        return {}
+    with gzip.open(NAVER_CAT_PATH, "rt", encoding="utf-8", newline="") as handle:
+        return {rec["code"]: rec["path"] for rec in csv.DictReader(handle)}
+
+
+def naver_code(path: str, cats: dict[str, str]) -> str:
+    """경로가 목록에 정확히 있으면 번호. 없으면 마지막 이름이 같은 카테고리가 하나뿐일 때 그 번호, 아니면 ''."""
+    key = compact(path)
+    exact = next((code for code, p in cats.items() if compact(p) == key), "")
+    if exact:
+        return exact
+    leaf = compact(path.split(">")[-1])
+    same = [code for code, p in cats.items() if compact(p.split(">")[-1]) == leaf]
+    return same[0] if len(same) == 1 else ""
+
+
 # ---------------------------------------------------------------- Excel (기본정보 시트)
 
 def _norm(h) -> str:
@@ -60,6 +80,7 @@ def find_columns(headers: list, offset: int = 0) -> dict | None:
 
     cols = {"name": find(lambda h: h.startswith("상품명")), "price": find(lambda h: h.startswith("판매가")),
             "quantity": find(lambda h: h.startswith("수량")), "origin": find(lambda h: h.startswith("원산지")),
+            "folder": find(lambda h: h.startswith("폴더명")),
             "option_details": find(lambda h: "선택사항" in h and "상세정보" in h)}
     return cols if cols["name"] is not None else None
 
@@ -90,7 +111,7 @@ def read_rows(path: Path) -> tuple[list[dict], dict]:
         if name:
             rows.append({"row": r, "excel_row": r + (1 if first == 0 else 0), "old": name, "price": val(r, "price"),
                          "quantity": val(r, "quantity"), "origin": str(val(r, "origin")).strip(),
-                         "option_details": str(val(r, "option_details"))})
+                         "folder": str(val(r, "folder")).strip(), "option_details": str(val(r, "option_details"))})
     return rows, cols
 
 
