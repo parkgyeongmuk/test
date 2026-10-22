@@ -15,7 +15,7 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = SKILL_DIR / "keyword_db.csv.gz"
 CONFIG_PATH = SKILL_DIR / "config.json"
-NAVER_CAT_PATH = SKILL_DIR / "naver_categories.csv.gz"
+MARKET_CAT_PATH = SKILL_DIR / "market_categories.json.gz"
 TITLE_MIN, TITLE_MAX = 30, 40
 
 COLOR_WORDS = ("블랙", "화이트", "아이보리", "베이지", "레드", "블루", "그린", "핑크", "브라운", "그레이", "네이비",
@@ -29,6 +29,16 @@ def config() -> dict:
         return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+
+
+DEFAULT_MARKETS = [{"sheet": "스마트스토어", "name": "스마트스토어"}, {"sheet": "11번가", "name": "11번가"},
+                   {"sheet": "옥션", "name": "옥션"}, {"sheet": "G마켓", "name": "지마켓"},
+                   {"sheet": "톡스토어", "name": "톡스토어"}]
+
+
+def markets() -> list[dict]:
+    """확장정보 '마켓 카테고리번호'에 적을 마켓. sheet = 마켓카테고리 엑셀 시트 이름, name = 이셀러스에 적는 마켓명."""
+    return config().get("markets", DEFAULT_MARKETS)
 
 
 def brands() -> list[str]:
@@ -47,12 +57,23 @@ def clean(value, brand_list: list[str] | None = None) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+_market_cats = None
+
+
+def market_categories() -> dict[str, dict[str, str]]:
+    """마켓(시트 이름) → {카테고리 번호: 경로}. 이셀러스 마켓카테고리 엑셀로 만든 목록입니다."""
+    global _market_cats
+    if _market_cats is None:
+        _market_cats = {}
+        if MARKET_CAT_PATH.exists():
+            with gzip.open(MARKET_CAT_PATH, "rt", encoding="utf-8") as handle:
+                _market_cats = json.load(handle)["markets"]
+    return _market_cats
+
+
 def naver_categories() -> dict[str, str]:
-    """네이버쇼핑 카테고리 번호 → 경로('생활/건강 > 주방용품 > ...')."""
-    if not NAVER_CAT_PATH.exists():
-        return {}
-    with gzip.open(NAVER_CAT_PATH, "rt", encoding="utf-8", newline="") as handle:
-        return {rec["code"]: rec["path"] for rec in csv.DictReader(handle)}
+    """스마트스토어(네이버쇼핑) 카테고리 번호 → 경로('생활/건강 > 주방용품 > ...')."""
+    return market_categories().get("스마트스토어", {})
 
 
 def naver_code(path: str, cats: dict[str, str]) -> str:
@@ -80,7 +101,7 @@ def find_columns(headers: list, offset: int = 0) -> dict | None:
 
     cols = {"name": find(lambda h: h.startswith("상품명")), "price": find(lambda h: h.startswith("판매가")),
             "quantity": find(lambda h: h.startswith("수량")), "origin": find(lambda h: h.startswith("원산지")),
-            "folder": find(lambda h: h.startswith("폴더명")),
+            "folder": find(lambda h: h.startswith("폴더명")), "no": find(lambda h: h.startswith("원본번호")),
             "option_details": find(lambda h: "선택사항" in h and "상세정보" in h)}
     return cols if cols["name"] is not None else None
 
@@ -109,10 +130,47 @@ def read_rows(path: Path) -> tuple[list[dict], dict]:
     for r in range(header + 2, nrows):
         name = str(val(r, "name")).strip()
         if name:
-            rows.append({"row": r, "excel_row": r + (1 if first == 0 else 0), "old": name, "price": val(r, "price"),
+            rows.append({"row": r, "excel_row": r + (1 if first == 0 else 0), "no": code_text(val(r, "no")),
+                         "old": name, "price": val(r, "price"),
                          "quantity": val(r, "quantity"), "origin": str(val(r, "origin")).strip(),
                          "folder": str(val(r, "folder")).strip(), "option_details": str(val(r, "option_details"))})
     return rows, cols
+
+
+def code_text(value) -> str:
+    """엑셀이 숫자로 읽은 번호(68033024.0)를 글자('68033024')로."""
+    text = str(value or "").strip()
+    return text[:-2] if text.endswith(".0") else text
+
+
+def ext_rows(path: Path) -> dict[str, int]:
+    """확장정보 시트: 원본번호 → 행 위치(xls는 0부터, xlsx는 1부터). 시트가 없으면 {}."""
+    data = path.read_bytes()
+    if path.suffix.lower() == ".xls":
+        import xlrd
+        book = xlrd.open_workbook(file_contents=data)
+        if "확장정보" not in book.sheet_names():
+            return {}
+        sheet = book.sheet_by_name("확장정보")
+        return {code_text(sheet.cell_value(r, 0)): r for r in range(2, sheet.nrows) if code_text(sheet.cell_value(r, 0))}
+    from openpyxl import load_workbook
+    book = load_workbook(io.BytesIO(data))
+    if "확장정보" not in book.sheetnames:
+        return {}
+    sheet = book["확장정보"]
+    return {code_text(sheet.cell(r, 1).value): r for r in range(3, sheet.max_row + 1) if code_text(sheet.cell(r, 1).value)}
+
+
+def ext_market_text(path: Path) -> dict[str, str]:
+    """확장정보 원본번호 → '마켓 카테고리번호'(B열) 글자. 저장 후 확인용."""
+    data, rows = path.read_bytes(), ext_rows(path)
+    if path.suffix.lower() == ".xls":
+        import xlrd
+        sheet = xlrd.open_workbook(file_contents=data).sheet_by_name("확장정보") if rows else None
+        return {no: str(sheet.cell_value(r, 1)) for no, r in rows.items()}
+    from openpyxl import load_workbook
+    sheet = load_workbook(io.BytesIO(data))["확장정보"] if rows else None
+    return {no: str(sheet.cell(r, 2).value or "") for no, r in rows.items()}
 
 
 def number(value) -> Decimal | None:
@@ -154,8 +212,10 @@ def updates_for(row: dict, cols: dict, title: str | None, rules: bool = True) ->
     return cells
 
 
-def write_excel(src: Path, dst: Path, updates: dict[int, dict]) -> None:
+def write_excel(src: Path, dst: Path, updates: dict[int, dict], market_text: dict[str, str] | None = None) -> None:
+    """updates = 기본정보 {행: {열: 값}}, market_text = 확장정보 {원본번호: B열 '마켓명*번호' 줄들}."""
     data = src.read_bytes()
+    ext = ext_rows(src) if market_text else {}
     if src.suffix.lower() == ".xls":
         import xlrd
         from xlutils.copy import copy
@@ -165,6 +225,10 @@ def write_excel(src: Path, dst: Path, updates: dict[int, dict]) -> None:
         for r, cells in updates.items():
             for c, v in cells.items():
                 sheet.write(r, c, v)
+        if ext:
+            ext_sheet = out.get_sheet(book.sheet_names().index("확장정보"))
+            for no, text in market_text.items():
+                ext_sheet.write(ext[no], 1, text)
         out.save(str(dst))
     else:
         from openpyxl import load_workbook
@@ -173,6 +237,8 @@ def write_excel(src: Path, dst: Path, updates: dict[int, dict]) -> None:
         for r, cells in updates.items():
             for c, v in cells.items():
                 sheet.cell(r, c).value = v
+        for no, text in market_text.items() if ext else ():
+            book["확장정보"].cell(ext[no], 2).value = text
         book.save(dst)
 
 
