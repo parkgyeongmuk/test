@@ -1,32 +1,54 @@
 """3단계: 상품명을 규칙대로 검사하고, 통과하면 판매가·수량·원산지까지 고친 새 엑셀을 원본 옆에 저장합니다.
-사용: python apply.py <원본 엑셀> <상품명.json> [--names-only]
+사용: python apply.py <원본 엑셀> <상품명.json> [--names-only] [--categories <카테고리.json>]
   상품명.json 예: {"3": "도시락통 주머니 ...", "4": "..."}  (키 = 엑셀 행 번호)
   --names-only: 판매가·수량·원산지는 그대로 두고 상품명만 바꿈
+  --categories: category.py --out 결과(행번호 → category·code)를 '폴더명' 칸에 "[번호] 경로"로 적음
 검사에 걸리면(반복 단어, 기존 단어 빠짐, 40자 초과, 브랜드 등) 저장하지 않고 이유를 보여줍니다."""
 import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import check_title, clean, read_rows, updates_for, write_excel  # noqa: E402
+from common import check_title, clean, naver_categories, read_rows, updates_for, write_excel  # noqa: E402
 
 src = Path(sys.argv[1])
 titles = {int(k): str(v).strip() for k, v in json.loads(Path(sys.argv[2]).read_text(encoding="utf-8-sig")).items()}
 rules = "--names-only" not in sys.argv
+cat_file = sys.argv[sys.argv.index("--categories") + 1] if "--categories" in sys.argv else None
+categories = json.loads(Path(cat_file).read_text(encoding="utf-8-sig")) if cat_file else {}
 rows, cols = read_rows(src)
+if categories and cols["folder"] is None:
+    sys.exit("❌ '폴더명' 열을 찾지 못해 카테고리를 적을 수 없습니다.")
+known = naver_categories()
+
+
+def folder_text(row: int) -> str | None:
+    """카테고리.json 항목 → '[번호] 경로'. 번호가 목록에 있으면 경로는 목록 것을 씁니다."""
+    item = categories.get(str(row)) or {}
+    code, path = str(item.get("code") or "").strip(), str(item.get("category") or "").strip()
+    if code and code in known:
+        path = known[code]
+    elif code:
+        problems.append(f"{row}행 카테고리 번호 {code}: 네이버 카테고리 목록에 없음")
+    if not path:
+        return None
+    return f"[{code}] {path}" if code else path
+
 
 problems, report, updates = [], [], {}
 for r in rows:
     title = titles.get(r["excel_row"])
-    if not title:
+    if title:
+        errors, notes = check_title(title, r["old"])
+        if errors:
+            problems.append(f"{r['excel_row']}행 '{title}': " + " / ".join(errors))
+        report.append((r, title, notes))
+    else:
         report.append((r, None, ["상품명 없음 · 원래 상품명 유지"]))
-        updates[r["row"]] = updates_for(r, cols, None, rules)
-        continue
-    errors, notes = check_title(title, r["old"])
-    if errors:
-        problems.append(f"{r['excel_row']}행 '{title}': " + " / ".join(errors))
-    report.append((r, title, notes))
     updates[r["row"]] = updates_for(r, cols, title, rules)
+    folder = folder_text(r["excel_row"])
+    if folder:
+        updates[r["row"]][cols["folder"]] = folder
 
 if problems:
     print("❌ 규칙에 걸려 저장하지 않았습니다. 고친 뒤 다시 실행하세요.")
@@ -45,14 +67,14 @@ before, _ = read_rows(src)
 after, _ = read_rows(dst)
 changed = set()
 for b, a in zip(before, after):
-    for key in ("old", "price", "quantity", "origin", "option_details"):
+    for key in ("old", "price", "quantity", "origin", "folder", "option_details"):
         if str(b[key]) != str(a[key]):
             changed.add(key)
-allowed = {"old", "price", "quantity", "origin"} if rules else {"old"}
+allowed = ({"old", "price", "quantity", "origin"} if rules else {"old"}) | ({"folder"} if categories else set())
 assert changed <= allowed, f"허용하지 않은 칸이 바뀜: {changed - allowed}"
 
 print(f"✅ 저장: {dst}")
-print("바뀐 칸:", ", ".join({"old": "상품명", "price": "판매가", "quantity": "수량", "origin": "원산지"}[k] for k in sorted(changed)) or "없음")
+print("바뀐 칸:", ", ".join({"old": "상품명", "price": "판매가", "quantity": "수량", "origin": "원산지", "folder": "폴더명(카테고리)"}[k] for k in sorted(changed)) or "없음")
 need = 0
 for r, title, notes in report:
     flag = (" ⚠️ " + " / ".join(notes)) if notes else ""
