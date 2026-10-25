@@ -104,7 +104,8 @@ def find_columns(headers: list, offset: int = 0) -> dict | None:
             "folder": find(lambda h: h.startswith("폴더명")), "no": find(lambda h: h.startswith("원본번호")),
             "option_details": find(lambda h: "선택사항" in h and "상세정보" in h),
             "option_type": find(lambda h: "선택사항" in h and "타입" in h),
-            "option_names": find(lambda h: "선택사항" in h and "옵션명" in h)}
+            "option_names": find(lambda h: "선택사항" in h and "옵션명" in h),
+            "option_stock_use": find(lambda h: "선택사항" in h and "재고" in h and "사용" in h)}
     return cols if cols["name"] is not None else None
 
 
@@ -136,7 +137,8 @@ def read_rows(path: Path) -> tuple[list[dict], dict]:
                          "old": name, "price": val(r, "price"),
                          "quantity": val(r, "quantity"), "origin": str(val(r, "origin")).strip(),
                          "folder": str(val(r, "folder")).strip(), "option_details": str(val(r, "option_details")),
-                         "option_type": str(val(r, "option_type")), "option_names": str(val(r, "option_names"))})
+                         "option_type": str(val(r, "option_type")), "option_names": str(val(r, "option_names")),
+                         "option_stock_use": str(val(r, "option_stock_use"))})
     return rows, cols
 
 
@@ -226,6 +228,7 @@ def option_count(value) -> int:
 
 
 OPTION_STOCK_MAX = 999
+OPTION_KEYS = ("option_type", "option_names", "option_details", "option_stock_use")
 
 
 def cap_option_stock(value) -> str:
@@ -270,9 +273,10 @@ def updates_for(row: dict, cols: dict, title: str | None, rules: bool = True) ->
             cells[cols["quantity"]] = int(qty) // bundle
         if row["origin"] == "기타" and cols["origin"] is not None:
             cells[cols["origin"]] = "수입/아시아/중국"
-        # 옵션이 한 줄뿐이면(예: '레드**0*999*Y') 옵션 없는 상품으로 올리도록 타입·옵션명을 비웁니다.
+        # 옵션이 한 줄뿐이면(예: '레드**0*999*Y') 옵션 없는 상품으로 올리도록 선택사항 칸을 모두 비웁니다.
+        # 수량은 위에서 이미 그 한 줄의 재고(999까지)로 계산했습니다.
         if option_count(row["option_details"]) == 1:
-            for key in ("option_type", "option_names"):
+            for key in OPTION_KEYS:
                 if cols[key] is not None and row[key].strip():
                     cells[cols[key]] = ""
     return cells

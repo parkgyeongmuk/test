@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (bundle_suffix, check_title, clean, ext_market_text, ext_rows, market_categories,  # noqa: E402
-                    markets, naver_categories, option_count, price_plan, read_rows, updates_for, write_excel)
+                    markets, naver_categories, OPTION_KEYS, option_count, price_plan, read_rows, updates_for, write_excel)
 
 src = Path(sys.argv[1])
 titles = {int(k): str(v).strip() for k, v in json.loads(Path(sys.argv[2]).read_text(encoding="utf-8-sig")).items()}
@@ -85,8 +85,8 @@ for r in rows:
             notes.append(f"원래 상품명에 숫자가 있어 '{suffix.strip()}'와 헷갈릴 수 있음 → 확인 필요")
         if option_count(r["option_details"]) > 1:
             notes.append("옵션 재고·추가금은 1개 기준 그대로 → 이셀러스에서 확인 필요")
-    if rules and option_count(r["option_details"]) == 1 and (r["option_type"].strip() or r["option_names"].strip()):
-        notes.append("옵션 한 줄뿐 → 선택사항 타입·옵션명 비움(옵션 없는 상품)")
+    if rules and option_count(r["option_details"]) == 1:
+        notes.append("옵션 한 줄뿐 → 선택사항 칸 비움(옵션 없는 상품)")
     report.append((r, title, notes, plan))
     updates[r["row"]] = updates_for(r, cols, title, rules)
     folder = folder_text(r["excel_row"])
@@ -113,10 +113,11 @@ before, _ = read_rows(src)
 after, _ = read_rows(dst)
 changed = set()
 for b, a in zip(before, after):
-    for key in ("old", "price", "quantity", "origin", "folder", "option_details", "option_type", "option_names"):
+    for key in ("old", "price", "quantity", "origin", "folder", "option_details", "option_type", "option_names",
+                "option_stock_use"):
         if str(b[key]) != str(a[key]):
             changed.add(key)
-allowed = ({"old", "price", "quantity", "origin", "option_details", "option_type", "option_names"} if rules else {"old"}) | ({"folder"} if categories else set())
+allowed = ({"old", "price", "quantity", "origin", *OPTION_KEYS} if rules else {"old"}) | ({"folder"} if categories else set())
 assert changed <= allowed, f"허용하지 않은 칸이 바뀜: {changed - allowed}"
 if use_markets:
     old_ext, new_ext = ext_market_text(src), ext_market_text(dst)
@@ -127,7 +128,7 @@ if use_markets:
 
 print(f"✅ 저장: {dst}")
 print("바뀐 칸:", ", ".join({"old": "상품명", "price": "판매가", "quantity": "수량", "origin": "원산지", "folder": "폴더명(카테고리)",
-                        "option_details": "선택사항 상세정보(재고 999까지)", "option_type": "선택사항 타입", "option_names": "선택사항 옵션명",
+                        "option_details": "선택사항 상세정보(재고 999까지)", "option_type": "선택사항 타입", "option_stock_use": "선택사항 재고 사용여부", "option_names": "선택사항 옵션명",
                         "markets": "확장정보 마켓 카테고리"}[k] for k in sorted(changed)) or "없음")
 need = 0
 for r, title, notes, plan in report:
