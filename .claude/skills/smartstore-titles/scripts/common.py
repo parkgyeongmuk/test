@@ -185,35 +185,42 @@ def number(value) -> Decimal | None:
         return None
 
 
-DEFAULT_PRICING = {"markup": 1.25, "fee_rate": 0.06, "min_margin": 1000, "max_bundle": 5}
+DEFAULT_PRICING = {"markup": 1.25, "max_markup": 1.5, "fee_rate": 0.13, "min_margin": 1500, "max_bundle": 5,
+                   "shipping_fee": 3000, "shipping_fee_rate": 0.033}
 
 
 def pricing() -> dict:
-    """판매가 규칙: 원가×markup(10원 단위), 수수료 fee_rate를 떼고 한 건당 min_margin원 이상 남게."""
+    """판매가 규칙: 원가×markup(10원 단위), 판매 수수료 fee_rate와 배송비 수수료를 떼고 한 건당 min_margin원 이상 남게."""
     return {**DEFAULT_PRICING, **config().get("pricing", {})}
 
 
+def shipping_cost() -> Decimal:
+    """고객에게 받은 배송비에 붙는 수수료. 배송비 자체는 공급사 택배비와 같아서 빠집니다."""
+    rule = pricing()
+    return Decimal(str(rule["shipping_fee"])) * Decimal(str(rule["shipping_fee_rate"]))
+
+
 def margin(price, cost) -> Decimal:
-    """한 건 팔았을 때 남는 돈 = 판매가 - 수수료 - 원가 (택배비·포장비·부가세는 빼지 않음)."""
-    return Decimal(price) * (1 - Decimal(str(pricing()["fee_rate"]))) - Decimal(cost)
+    """한 건 팔았을 때 남는 돈 = 판매가 - 판매 수수료 - 원가 - 배송비 수수료 (포장비·부가세는 빼지 않음)."""
+    return Decimal(price) * (1 - Decimal(str(pricing()["fee_rate"]))) - Decimal(cost) - shipping_cost()
 
 
 def price_plan(value) -> dict | None:
     """원가(엑셀 판매가) → {"bundle": 묶음 개수, "price": 새 판매가, "margin": 남는 돈}.
-    원가×25%로 마진이 모자라면 묶음 개수를 늘리고(max_bundle까지), 그래도 모자라면 판매가를 올립니다."""
+    판매가 = max(원가×markup, 마진을 맞추는 가장 낮은 값)을 10원 단위로. 그 값이 원가×max_markup을 넘으면
+    (단가가 너무 낮아 값만 올리면 비싸 보이면) 묶음 개수를 늘립니다(max_bundle까지)."""
     cost = number(value)
     if cost is None:
         return None
     rule = pricing()
-    markup, keep = Decimal(str(rule["markup"])), Decimal(str(rule["min_margin"]))
-    fee = Decimal(str(rule["fee_rate"]))
+    markup, cap = Decimal(str(rule["markup"])), Decimal(str(rule["max_markup"]))
+    keep, fee = Decimal(str(rule["min_margin"])), Decimal(str(rule["fee_rate"]))
     for n in range(1, max(1, int(rule["max_bundle"])) + 1):
-        price = (cost * n * markup).quantize(Decimal("1E1"), rounding=ROUND_HALF_UP)
-        if margin(price, cost * n) >= keep:
+        base = (cost * n * markup).quantize(Decimal("1E1"), rounding=ROUND_HALF_UP)
+        need = Decimal(math.ceil((cost * n + keep + shipping_cost()) / (1 - fee) / 10) * 10)
+        price = max(base, need)
+        if price <= cost * n * cap:
             break
-    else:
-        # 최대 묶음으로도 모자라면 마진을 맞추는 가장 낮은 10원 단위 판매가로 올립니다.
-        price = Decimal(math.ceil((cost * n + keep) / (1 - fee) / 10) * 10)
     return {"bundle": n, "price": int(price), "margin": int(margin(price, cost * n))}
 
 

@@ -13,8 +13,10 @@ rows, cols = read_rows(path)
 missing = [k for k in ("price", "quantity", "origin", "option_details") if cols[k] is None]
 rule = pricing()
 print(f"파일: {path.name} | 상품 {len(rows)}개 | 제외 브랜드: {', '.join(brands())}")
-print(f"판매가 규칙: 원가 +{(rule['markup'] - 1) * 100:g}%, 수수료 {rule['fee_rate'] * 100:g}% 떼고 "
-      f"한 건당 {rule['min_margin']:,}원 이상 남게(모자라면 최대 {rule['max_bundle']}개까지 묶음)")
+print(f"판매가 규칙: 원가 +{(rule['markup'] - 1) * 100:g}%, 수수료 {rule['fee_rate'] * 100:g}%와 "
+      f"배송비 {rule['shipping_fee']:,}원의 수수료 {rule['shipping_fee_rate'] * 100:g}%를 떼고 "
+      f"한 건당 {rule['min_margin']:,}원 이상 남게(그러려면 원가의 {rule['max_markup']:g}배를 넘는 상품은 "
+      f"최대 {rule['max_bundle']}개까지 묶음)")
 if missing:
     print("참고: 찾지 못한 열(수정 안 함):", ", ".join(missing))
 for r in rows:

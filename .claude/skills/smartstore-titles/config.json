@@ -1,5 +1,6 @@
 {
-  "pricing": {"markup": 1.25, "fee_rate": 0.06, "min_margin": 1000, "max_bundle": 5},
+  "pricing": {"markup": 1.25, "max_markup": 1.5, "fee_rate": 0.13, "min_margin": 1500, "max_bundle": 5,
+              "shipping_fee": 3000, "shipping_fee_rate": 0.033},
   "brands": ["사이노텍", "다이소", "스탠리", "무인양품", "이케아", "락앤락", "코스트코", "스타벅스"],
   "markets": [
     {"sheet": "스마트스토어", "name": "스마트스토어"},
