@@ -180,9 +180,41 @@ def number(value) -> Decimal | None:
         return None
 
 
-def new_price(value) -> int | None:
-    price = number(value)
-    return None if price is None else int((price * Decimal("1.25")).quantize(Decimal("1E1"), rounding=ROUND_HALF_UP))
+DEFAULT_PRICING = {"markup": 1.25, "fee_rate": 0.06, "min_margin": 1000, "max_bundle": 5}
+
+
+def pricing() -> dict:
+    """판매가 규칙: 원가×markup(10원 단위), 수수료 fee_rate를 떼고 한 건당 min_margin원 이상 남게."""
+    return {**DEFAULT_PRICING, **config().get("pricing", {})}
+
+
+def margin(price, cost) -> Decimal:
+    """한 건 팔았을 때 남는 돈 = 판매가 - 수수료 - 원가 (택배비·포장비·부가세는 빼지 않음)."""
+    return Decimal(price) * (1 - Decimal(str(pricing()["fee_rate"]))) - Decimal(cost)
+
+
+def price_plan(value) -> dict | None:
+    """원가(엑셀 판매가) → {"bundle": 묶음 개수, "price": 새 판매가, "margin": 남는 돈}.
+    원가×25%로 마진이 모자라면 묶음 개수를 늘리고(max_bundle까지), 그래도 모자라면 판매가를 올립니다."""
+    cost = number(value)
+    if cost is None:
+        return None
+    rule = pricing()
+    markup, keep = Decimal(str(rule["markup"])), Decimal(str(rule["min_margin"]))
+    fee = Decimal(str(rule["fee_rate"]))
+    for n in range(1, max(1, int(rule["max_bundle"])) + 1):
+        price = (cost * n * markup).quantize(Decimal("1E1"), rounding=ROUND_HALF_UP)
+        if margin(price, cost * n) >= keep:
+            break
+    else:
+        # 최대 묶음으로도 모자라면 마진을 맞추는 가장 낮은 10원 단위 판매가로 올립니다.
+        price = Decimal(math.ceil((cost * n + keep) / (1 - fee) / 10) * 10)
+    return {"bundle": n, "price": int(price), "margin": int(margin(price, cost * n))}
+
+
+def bundle_suffix(n: int) -> str:
+    """상품명 끝에 붙이는 묶음 개수(1개면 붙이지 않음)."""
+    return f" {n}개" if n > 1 else ""
 
 
 def option_stock(value) -> int | None:
@@ -196,17 +228,19 @@ def option_stock(value) -> int | None:
 
 
 def updates_for(row: dict, cols: dict, title: str | None, rules: bool = True) -> dict:
+    """title에는 묶음 개수가 이미 붙어 있어야 합니다. 수량은 묶음 단위(재고 ÷ 묶음 개수)로 적습니다."""
     cells = {}
     if title:
         cells[cols["name"]] = title
     if rules:
-        price = new_price(row["price"])
-        if price is not None and cols["price"] is not None:
-            cells[cols["price"]] = price
+        plan = price_plan(row["price"])
+        if plan is not None and cols["price"] is not None:
+            cells[cols["price"]] = plan["price"]
+        bundle = plan["bundle"] if plan else 1
         stock = option_stock(row["option_details"])
         qty = stock if stock is not None else number(row["quantity"])
         if qty is not None and cols["quantity"] is not None:
-            cells[cols["quantity"]] = int(qty)
+            cells[cols["quantity"]] = int(qty) // bundle
         if row["origin"] == "기타" and cols["origin"] is not None:
             cells[cols["origin"]] = "수입/아시아/중국"
     return cells
@@ -308,14 +342,14 @@ def is_word(part: str) -> bool:
     return True if _db is False else _db.get(part) is not None
 
 
-def check_title(title: str, source: str) -> tuple[list[str], list[str]]:
-    """(오류, 참고) 반환. 오류가 있으면 저장하지 않습니다."""
+def check_title(title: str, source: str, suffix: str = "") -> tuple[list[str], list[str]]:
+    """(오류, 참고) 반환. 오류가 있으면 저장하지 않습니다. suffix = 뒤에 붙일 묶음 개수(' 3개')."""
     errors, notes = [], []
     words = title.split()
     src_words = clean(source).split()
     src_key = compact(source)
-    if len(title) > TITLE_MAX:
-        errors.append(f"{len(title)}자 (40자 초과)")
+    if len(title + suffix) > TITLE_MAX:
+        errors.append(f"{len(title + suffix)}자 (40자 초과" + (f", 묶음 '{suffix.strip()}' 포함)" if suffix else ")"))
     pos = 0
     for w in src_words:
         try:
@@ -347,6 +381,6 @@ def check_title(title: str, source: str) -> tuple[list[str], list[str]]:
                 errors.append(f"원본에 없는 숫자: {a}")
             if any((ka == c or ka.endswith(c)) and c not in src_key for c in COLOR_WORDS + SIZE_WORDS):
                 errors.append(f"원본에 없는 색상/크기: {a}")
-    if len(title) < TITLE_MIN:
-        notes.append(f"{len(title)}자 · 30자 미만(쓸 단어 부족) → 직접 보충 필요")
+    if len(title + suffix) < TITLE_MIN:
+        notes.append(f"{len(title + suffix)}자 · 30자 미만(쓸 단어 부족) → 직접 보충 필요")
     return errors, notes
