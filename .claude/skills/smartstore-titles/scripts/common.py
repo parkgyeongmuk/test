@@ -102,7 +102,10 @@ def find_columns(headers: list, offset: int = 0) -> dict | None:
     cols = {"name": find(lambda h: h.startswith("상품명")), "price": find(lambda h: h.startswith("판매가")),
             "quantity": find(lambda h: h.startswith("수량")), "origin": find(lambda h: h.startswith("원산지")),
             "folder": find(lambda h: h.startswith("폴더명")), "no": find(lambda h: h.startswith("원본번호")),
-            "option_details": find(lambda h: "선택사항" in h and "상세정보" in h)}
+            "option_details": find(lambda h: "선택사항" in h and "상세정보" in h),
+            "option_type": find(lambda h: "선택사항" in h and "타입" in h),
+            "option_names": find(lambda h: "선택사항" in h and "옵션명" in h),
+            "option_stock_use": find(lambda h: "선택사항" in h and "재고" in h and "사용" in h)}
     return cols if cols["name"] is not None else None
 
 
@@ -133,7 +136,9 @@ def read_rows(path: Path) -> tuple[list[dict], dict]:
             rows.append({"row": r, "excel_row": r + (1 if first == 0 else 0), "no": code_text(val(r, "no")),
                          "old": name, "price": val(r, "price"),
                          "quantity": val(r, "quantity"), "origin": str(val(r, "origin")).strip(),
-                         "folder": str(val(r, "folder")).strip(), "option_details": str(val(r, "option_details"))})
+                         "folder": str(val(r, "folder")).strip(), "option_details": str(val(r, "option_details")),
+                         "option_type": str(val(r, "option_type")), "option_names": str(val(r, "option_names")),
+                         "option_stock_use": str(val(r, "option_stock_use"))})
     return rows, cols
 
 
@@ -180,9 +185,70 @@ def number(value) -> Decimal | None:
         return None
 
 
-def new_price(value) -> int | None:
-    price = number(value)
-    return None if price is None else int((price * Decimal("1.25")).quantize(Decimal("1E1"), rounding=ROUND_HALF_UP))
+DEFAULT_PRICING = {"markup": 1.25, "max_markup": 1.5, "fee_rate": 0.13, "min_margin": 1500, "max_bundle": 5,
+                   "shipping_fee": 3000, "shipping_fee_rate": 0.033}
+
+
+def pricing() -> dict:
+    """판매가 규칙: 원가×markup(10원 단위), 판매 수수료 fee_rate와 배송비 수수료를 떼고 한 건당 min_margin원 이상 남게."""
+    return {**DEFAULT_PRICING, **config().get("pricing", {})}
+
+
+def shipping_cost() -> Decimal:
+    """고객에게 받은 배송비에 붙는 수수료. 배송비 자체는 공급사 택배비와 같아서 빠집니다."""
+    rule = pricing()
+    return Decimal(str(rule["shipping_fee"])) * Decimal(str(rule["shipping_fee_rate"]))
+
+
+def margin(price, cost) -> Decimal:
+    """한 건 팔았을 때 남는 돈 = 판매가 - 판매 수수료 - 원가 - 배송비 수수료 (포장비·부가세는 빼지 않음)."""
+    return Decimal(price) * (1 - Decimal(str(pricing()["fee_rate"]))) - Decimal(cost) - shipping_cost()
+
+
+def price_plan(value) -> dict | None:
+    """원가(엑셀 판매가) → {"bundle": 묶음 개수, "price": 새 판매가, "margin": 남는 돈}.
+    판매가 = max(원가×markup, 마진을 맞추는 가장 낮은 값)을 10원 단위로. 그 값이 원가×max_markup을 넘으면
+    (단가가 너무 낮아 값만 올리면 비싸 보이면) 묶음 개수를 늘립니다(max_bundle까지)."""
+    cost = number(value)
+    if cost is None:
+        return None
+    rule = pricing()
+    markup, cap = Decimal(str(rule["markup"])), Decimal(str(rule["max_markup"]))
+    keep, fee = Decimal(str(rule["min_margin"])), Decimal(str(rule["fee_rate"]))
+    for n in range(1, max(1, int(rule["max_bundle"])) + 1):
+        base = (cost * n * markup).quantize(Decimal("1E1"), rounding=ROUND_HALF_UP)
+        need = Decimal(math.ceil((cost * n + keep + shipping_cost()) / (1 - fee) / 10) * 10)
+        price = max(base, need)
+        if price <= cost * n * cap:
+            break
+    return {"bundle": n, "price": int(price), "margin": int(margin(price, cost * n))}
+
+
+def bundle_suffix(n: int) -> str:
+    """상품명 끝에 붙이는 묶음 개수(1개면 붙이지 않음)."""
+    return f" {n}개" if n > 1 else ""
+
+
+def option_count(value) -> int:
+    """선택사항 상세정보의 옵션 줄 수."""
+    return sum(1 for line in str(value or "").replace("\r", "\n").split("\n") if line.strip())
+
+
+OPTION_STOCK_MAX = 999
+OPTION_KEYS = ("option_type", "option_names", "option_details", "option_stock_use")
+
+
+def cap_option_stock(value) -> str:
+    """선택사항 상세정보의 옵션별 재고(4번째 칸)를 999까지로. 예) '백합그린**0*99990*Y' → '백합그린**0*999*Y'."""
+    text = str(value or "")
+    lines = []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        parts = line.split("*")
+        if len(parts) >= 4 and number(parts[3]) is not None and number(parts[3]) > OPTION_STOCK_MAX:
+            parts[3] = str(OPTION_STOCK_MAX)
+        lines.append("*".join(parts))
+    capped = "\n".join(lines)
+    return text if capped == text.replace("\r\n", "\n").replace("\r", "\n") else capped
 
 
 def option_stock(value) -> int | None:
@@ -196,19 +262,30 @@ def option_stock(value) -> int | None:
 
 
 def updates_for(row: dict, cols: dict, title: str | None, rules: bool = True) -> dict:
+    """title에는 묶음 개수가 이미 붙어 있어야 합니다. 수량은 묶음 단위(재고 ÷ 묶음 개수)로 적습니다."""
     cells = {}
     if title:
         cells[cols["name"]] = title
     if rules:
-        price = new_price(row["price"])
-        if price is not None and cols["price"] is not None:
-            cells[cols["price"]] = price
-        stock = option_stock(row["option_details"])
+        plan = price_plan(row["price"])
+        if plan is not None and cols["price"] is not None:
+            cells[cols["price"]] = plan["price"]
+        bundle = plan["bundle"] if plan else 1
+        details = cap_option_stock(row["option_details"])
+        if details != row["option_details"] and cols["option_details"] is not None:
+            cells[cols["option_details"]] = details
+        stock = option_stock(details)
         qty = stock if stock is not None else number(row["quantity"])
         if qty is not None and cols["quantity"] is not None:
-            cells[cols["quantity"]] = int(qty)
+            cells[cols["quantity"]] = int(qty) // bundle
         if row["origin"] == "기타" and cols["origin"] is not None:
             cells[cols["origin"]] = "수입/아시아/중국"
+        # 옵션이 한 줄뿐이면(예: '레드**0*999*Y') 옵션 없는 상품으로 올리도록 선택사항 칸을 모두 비웁니다.
+        # 수량은 위에서 이미 그 한 줄의 재고(999까지)로 계산했습니다.
+        if option_count(row["option_details"]) == 1:
+            for key in OPTION_KEYS:
+                if cols[key] is not None and row[key].strip():
+                    cells[cols[key]] = ""
     return cells
 
 
@@ -308,14 +385,14 @@ def is_word(part: str) -> bool:
     return True if _db is False else _db.get(part) is not None
 
 
-def check_title(title: str, source: str) -> tuple[list[str], list[str]]:
-    """(오류, 참고) 반환. 오류가 있으면 저장하지 않습니다."""
+def check_title(title: str, source: str, suffix: str = "") -> tuple[list[str], list[str]]:
+    """(오류, 참고) 반환. 오류가 있으면 저장하지 않습니다. suffix = 뒤에 붙일 묶음 개수(' 3개')."""
     errors, notes = [], []
     words = title.split()
     src_words = clean(source).split()
     src_key = compact(source)
-    if len(title) > TITLE_MAX:
-        errors.append(f"{len(title)}자 (40자 초과)")
+    if len(title + suffix) > TITLE_MAX:
+        errors.append(f"{len(title + suffix)}자 (40자 초과" + (f", 묶음 '{suffix.strip()}' 포함)" if suffix else ")"))
     pos = 0
     for w in src_words:
         try:
@@ -347,6 +424,6 @@ def check_title(title: str, source: str) -> tuple[list[str], list[str]]:
                 errors.append(f"원본에 없는 숫자: {a}")
             if any((ka == c or ka.endswith(c)) and c not in src_key for c in COLOR_WORDS + SIZE_WORDS):
                 errors.append(f"원본에 없는 색상/크기: {a}")
-    if len(title) < TITLE_MIN:
-        notes.append(f"{len(title)}자 · 30자 미만(쓸 단어 부족) → 직접 보충 필요")
+    if len(title + suffix) < TITLE_MIN:
+        notes.append(f"{len(title + suffix)}자 · 30자 미만(쓸 단어 부족) → 직접 보충 필요")
     return errors, notes

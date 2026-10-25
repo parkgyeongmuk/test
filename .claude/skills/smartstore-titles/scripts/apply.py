@@ -1,7 +1,9 @@
 """3단계: 상품명을 규칙대로 검사하고, 통과하면 판매가·수량·원산지까지 고친 새 엑셀을 원본 옆에 저장합니다.
 사용: python apply.py <원본 엑셀> <상품명.json> [--names-only] [--categories <카테고리.json>]
   상품명.json 예: {"3": "도시락통 주머니 ...", "4": "..."}  (키 = 엑셀 행 번호)
-  --names-only: 판매가·수량·원산지는 그대로 두고 상품명만 바꿈
+  --names-only: 판매가·수량·원산지·선택사항은 그대로 두고 상품명만 바꿈(묶음 개수도 붙이지 않음)
+원가가 낮아 한 개로는 마진(config.json pricing.min_margin)이 안 남는 상품은 묶음으로 팔아
+상품명 끝에 " 3개"처럼 개수를 붙이고, 판매가는 묶음 값, 수량은 재고 ÷ 묶음 개수로 적습니다.
   --categories: category.py --out 결과(행번호 → category·code)를 '폴더명' 칸에 "[번호] 경로"로 적음.
                 항목에 "markets"(시트 이름 → 번호)가 있으면 확장정보 '마켓 카테고리번호' 칸을
                 config.json 마켓만 "마켓명*번호" 줄로 새로 적음(원래 값은 지움)
@@ -11,8 +13,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import (check_title, clean, ext_market_text, ext_rows, market_categories, markets,  # noqa: E402
-                    naver_categories, read_rows, updates_for, write_excel)
+from common import (bundle_suffix, check_title, clean, ext_market_text, ext_rows, market_categories,  # noqa: E402
+                    markets, naver_categories, OPTION_KEYS, option_count, price_plan, read_rows, updates_for, write_excel)
 
 src = Path(sys.argv[1])
 titles = {int(k): str(v).strip() for k, v in json.loads(Path(sys.argv[2]).read_text(encoding="utf-8-sig")).items()}
@@ -67,13 +69,25 @@ def market_text(row: dict) -> str | None:
 problems, report, updates, market_cells, missing = [], [], {}, {}, []
 for r in rows:
     title = titles.get(r["excel_row"])
+    plan = price_plan(r["price"]) if rules else None
+    suffix = bundle_suffix(plan["bundle"]) if plan else ""
     if title:
-        errors, notes = check_title(title, r["old"])
+        errors, notes = check_title(title, r["old"], suffix)
         if errors:
             problems.append(f"{r['excel_row']}행 '{title}': " + " / ".join(errors))
-        report.append((r, title, notes))
+        title += suffix
     else:
-        report.append((r, None, ["상품명 없음 · 원래 상품명 유지"]))
+        notes = ["상품명 없음 · 원래 상품명 유지"]
+        if suffix:  # 묶음 값으로 파는데 개수가 안 보이면 안 되니 원래 상품명에라도 붙입니다.
+            title = r["old"] + suffix
+    if suffix:
+        if any(ch.isdigit() for ch in r["old"]):
+            notes.append(f"원래 상품명에 숫자가 있어 '{suffix.strip()}'와 헷갈릴 수 있음 → 확인 필요")
+        if option_count(r["option_details"]) > 1:
+            notes.append("옵션 재고·추가금은 1개 기준 그대로 → 이셀러스에서 확인 필요")
+    if rules and option_count(r["option_details"]) == 1:
+        notes.append("옵션 한 줄뿐 → 선택사항 칸 비움(옵션 없는 상품)")
+    report.append((r, title, notes, plan))
     updates[r["row"]] = updates_for(r, cols, title, rules)
     folder = folder_text(r["excel_row"])
     if folder:
@@ -99,10 +113,11 @@ before, _ = read_rows(src)
 after, _ = read_rows(dst)
 changed = set()
 for b, a in zip(before, after):
-    for key in ("old", "price", "quantity", "origin", "folder", "option_details"):
+    for key in ("old", "price", "quantity", "origin", "folder", "option_details", "option_type", "option_names",
+                "option_stock_use"):
         if str(b[key]) != str(a[key]):
             changed.add(key)
-allowed = ({"old", "price", "quantity", "origin"} if rules else {"old"}) | ({"folder"} if categories else set())
+allowed = ({"old", "price", "quantity", "origin", *OPTION_KEYS} if rules else {"old"}) | ({"folder"} if categories else set())
 assert changed <= allowed, f"허용하지 않은 칸이 바뀜: {changed - allowed}"
 if use_markets:
     old_ext, new_ext = ext_market_text(src), ext_market_text(dst)
@@ -113,12 +128,14 @@ if use_markets:
 
 print(f"✅ 저장: {dst}")
 print("바뀐 칸:", ", ".join({"old": "상품명", "price": "판매가", "quantity": "수량", "origin": "원산지", "folder": "폴더명(카테고리)",
+                        "option_details": "선택사항 상세정보(재고 999까지)", "option_type": "선택사항 타입", "option_stock_use": "선택사항 재고 사용여부", "option_names": "선택사항 옵션명",
                         "markets": "확장정보 마켓 카테고리"}[k] for k in sorted(changed)) or "없음")
 need = 0
-for r, title, notes in report:
+for r, title, notes, plan in report:
     flag = (" ⚠️ " + " / ".join(notes)) if notes else ""
     need += bool(notes)
-    print(f"{r['excel_row']}행 ({len(title) if title else '-'}자) {title or r['old']}{flag}")
+    money = f" | {plan['bundle']}개 {plan['price']:,}원 · 마진 {plan['margin']:,}원" if plan else ""
+    print(f"{r['excel_row']}행 ({len(title) if title else '-'}자) {title or r['old']}{money}{flag}")
 print(f"확인 필요 {need}개" if need else "확인 필요 없음")
 if missing:
     print("⚠️ 마켓 카테고리 번호가 없어 빼고 적은 곳:", ", ".join(missing))
