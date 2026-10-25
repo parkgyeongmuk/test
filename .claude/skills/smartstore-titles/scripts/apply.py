@@ -116,7 +116,7 @@ for b, a in zip(before, after):
     for key in ("old", "price", "quantity", "origin", "folder", "option_details", "option_type", "option_names"):
         if str(b[key]) != str(a[key]):
             changed.add(key)
-allowed = ({"old", "price", "quantity", "origin", "option_type", "option_names"} if rules else {"old"}) | ({"folder"} if categories else set())
+allowed = ({"old", "price", "quantity", "origin", "option_details", "option_type", "option_names"} if rules else {"old"}) | ({"folder"} if categories else set())
 assert changed <= allowed, f"허용하지 않은 칸이 바뀜: {changed - allowed}"
 if use_markets:
     old_ext, new_ext = ext_market_text(src), ext_market_text(dst)
@@ -127,7 +127,7 @@ if use_markets:
 
 print(f"✅ 저장: {dst}")
 print("바뀐 칸:", ", ".join({"old": "상품명", "price": "판매가", "quantity": "수량", "origin": "원산지", "folder": "폴더명(카테고리)",
-                        "option_type": "선택사항 타입", "option_names": "선택사항 옵션명",
+                        "option_details": "선택사항 상세정보(재고 999까지)", "option_type": "선택사항 타입", "option_names": "선택사항 옵션명",
                         "markets": "확장정보 마켓 카테고리"}[k] for k in sorted(changed)) or "없음")
 need = 0
 for r, title, notes, plan in report:

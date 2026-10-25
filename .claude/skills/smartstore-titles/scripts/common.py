@@ -225,6 +225,22 @@ def option_count(value) -> int:
     return sum(1 for line in str(value or "").replace("\r", "\n").split("\n") if line.strip())
 
 
+OPTION_STOCK_MAX = 999
+
+
+def cap_option_stock(value) -> str:
+    """선택사항 상세정보의 옵션별 재고(4번째 칸)를 999까지로. 예) '백합그린**0*99990*Y' → '백합그린**0*999*Y'."""
+    text = str(value or "")
+    lines = []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        parts = line.split("*")
+        if len(parts) >= 4 and number(parts[3]) is not None and number(parts[3]) > OPTION_STOCK_MAX:
+            parts[3] = str(OPTION_STOCK_MAX)
+        lines.append("*".join(parts))
+    capped = "\n".join(lines)
+    return text if capped == text.replace("\r\n", "\n").replace("\r", "\n") else capped
+
+
 def option_stock(value) -> int | None:
     total, found = 0, False
     for line in str(value or "").replace("\r", "\n").split("\n"):
@@ -245,7 +261,10 @@ def updates_for(row: dict, cols: dict, title: str | None, rules: bool = True) ->
         if plan is not None and cols["price"] is not None:
             cells[cols["price"]] = plan["price"]
         bundle = plan["bundle"] if plan else 1
-        stock = option_stock(row["option_details"])
+        details = cap_option_stock(row["option_details"])
+        if details != row["option_details"] and cols["option_details"] is not None:
+            cells[cols["option_details"]] = details
+        stock = option_stock(details)
         qty = stock if stock is not None else number(row["quantity"])
         if qty is not None and cols["quantity"] is not None:
             cells[cols["quantity"]] = int(qty) // bundle
