@@ -1,7 +1,7 @@
 """3단계: 상품명을 규칙대로 검사하고, 통과하면 판매가·수량·원산지까지 고친 새 엑셀을 원본 옆에 저장합니다.
 사용: python apply.py <원본 엑셀> <상품명.json> [--names-only] [--categories <카테고리.json>]
   상품명.json 예: {"3": "도시락통 주머니 ...", "4": "..."}  (키 = 엑셀 행 번호)
-  --names-only: 판매가·수량·원산지는 그대로 두고 상품명만 바꿈(묶음 개수도 붙이지 않음)
+  --names-only: 판매가·수량·원산지·선택사항은 그대로 두고 상품명만 바꿈(묶음 개수도 붙이지 않음)
 원가가 낮아 한 개로는 마진(config.json pricing.min_margin)이 안 남는 상품은 묶음으로 팔아
 상품명 끝에 " 3개"처럼 개수를 붙이고, 판매가는 묶음 값, 수량은 재고 ÷ 묶음 개수로 적습니다.
   --categories: category.py --out 결과(행번호 → category·code)를 '폴더명' 칸에 "[번호] 경로"로 적음.
@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (bundle_suffix, check_title, clean, ext_market_text, ext_rows, market_categories,  # noqa: E402
-                    markets, naver_categories, price_plan, read_rows, updates_for, write_excel)
+                    markets, naver_categories, option_count, price_plan, read_rows, updates_for, write_excel)
 
 src = Path(sys.argv[1])
 titles = {int(k): str(v).strip() for k, v in json.loads(Path(sys.argv[2]).read_text(encoding="utf-8-sig")).items()}
@@ -30,10 +30,6 @@ use_markets = any("markets" in (item or {}) for item in categories.values())
 ext = ext_rows(src) if use_markets else {}
 if use_markets and not ext:
     sys.exit("❌ '확장정보' 시트를 찾지 못해 마켓 카테고리를 적을 수 없습니다.")
-
-
-def option_count(details: str) -> int:
-    return sum(1 for line in str(details or "").replace("\r", "\n").split("\n") if line.strip())
 
 
 def folder_text(row: int) -> str | None:
@@ -89,6 +85,8 @@ for r in rows:
             notes.append(f"원래 상품명에 숫자가 있어 '{suffix.strip()}'와 헷갈릴 수 있음 → 확인 필요")
         if option_count(r["option_details"]) > 1:
             notes.append("옵션 재고·추가금은 1개 기준 그대로 → 이셀러스에서 확인 필요")
+    if rules and option_count(r["option_details"]) == 1 and (r["option_type"].strip() or r["option_names"].strip()):
+        notes.append("옵션 한 줄뿐 → 선택사항 타입·옵션명 비움(옵션 없는 상품)")
     report.append((r, title, notes, plan))
     updates[r["row"]] = updates_for(r, cols, title, rules)
     folder = folder_text(r["excel_row"])
@@ -115,10 +113,10 @@ before, _ = read_rows(src)
 after, _ = read_rows(dst)
 changed = set()
 for b, a in zip(before, after):
-    for key in ("old", "price", "quantity", "origin", "folder", "option_details"):
+    for key in ("old", "price", "quantity", "origin", "folder", "option_details", "option_type", "option_names"):
         if str(b[key]) != str(a[key]):
             changed.add(key)
-allowed = ({"old", "price", "quantity", "origin"} if rules else {"old"}) | ({"folder"} if categories else set())
+allowed = ({"old", "price", "quantity", "origin", "option_type", "option_names"} if rules else {"old"}) | ({"folder"} if categories else set())
 assert changed <= allowed, f"허용하지 않은 칸이 바뀜: {changed - allowed}"
 if use_markets:
     old_ext, new_ext = ext_market_text(src), ext_market_text(dst)
@@ -129,6 +127,7 @@ if use_markets:
 
 print(f"✅ 저장: {dst}")
 print("바뀐 칸:", ", ".join({"old": "상품명", "price": "판매가", "quantity": "수량", "origin": "원산지", "folder": "폴더명(카테고리)",
+                        "option_type": "선택사항 타입", "option_names": "선택사항 옵션명",
                         "markets": "확장정보 마켓 카테고리"}[k] for k in sorted(changed)) or "없음")
 need = 0
 for r, title, notes, plan in report:

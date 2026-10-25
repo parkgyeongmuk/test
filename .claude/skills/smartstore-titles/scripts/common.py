@@ -102,7 +102,9 @@ def find_columns(headers: list, offset: int = 0) -> dict | None:
     cols = {"name": find(lambda h: h.startswith("상품명")), "price": find(lambda h: h.startswith("판매가")),
             "quantity": find(lambda h: h.startswith("수량")), "origin": find(lambda h: h.startswith("원산지")),
             "folder": find(lambda h: h.startswith("폴더명")), "no": find(lambda h: h.startswith("원본번호")),
-            "option_details": find(lambda h: "선택사항" in h and "상세정보" in h)}
+            "option_details": find(lambda h: "선택사항" in h and "상세정보" in h),
+            "option_type": find(lambda h: "선택사항" in h and "타입" in h),
+            "option_names": find(lambda h: "선택사항" in h and "옵션명" in h)}
     return cols if cols["name"] is not None else None
 
 
@@ -133,7 +135,8 @@ def read_rows(path: Path) -> tuple[list[dict], dict]:
             rows.append({"row": r, "excel_row": r + (1 if first == 0 else 0), "no": code_text(val(r, "no")),
                          "old": name, "price": val(r, "price"),
                          "quantity": val(r, "quantity"), "origin": str(val(r, "origin")).strip(),
-                         "folder": str(val(r, "folder")).strip(), "option_details": str(val(r, "option_details"))})
+                         "folder": str(val(r, "folder")).strip(), "option_details": str(val(r, "option_details")),
+                         "option_type": str(val(r, "option_type")), "option_names": str(val(r, "option_names"))})
     return rows, cols
 
 
@@ -217,6 +220,11 @@ def bundle_suffix(n: int) -> str:
     return f" {n}개" if n > 1 else ""
 
 
+def option_count(value) -> int:
+    """선택사항 상세정보의 옵션 줄 수."""
+    return sum(1 for line in str(value or "").replace("\r", "\n").split("\n") if line.strip())
+
+
 def option_stock(value) -> int | None:
     total, found = 0, False
     for line in str(value or "").replace("\r", "\n").split("\n"):
@@ -243,6 +251,11 @@ def updates_for(row: dict, cols: dict, title: str | None, rules: bool = True) ->
             cells[cols["quantity"]] = int(qty) // bundle
         if row["origin"] == "기타" and cols["origin"] is not None:
             cells[cols["origin"]] = "수입/아시아/중국"
+        # 옵션이 한 줄뿐이면(예: '레드**0*999*Y') 옵션 없는 상품으로 올리도록 타입·옵션명을 비웁니다.
+        if option_count(row["option_details"]) == 1:
+            for key in ("option_type", "option_names"):
+                if cols[key] is not None and row[key].strip():
+                    cells[cols[key]] = ""
     return cells
 
 
